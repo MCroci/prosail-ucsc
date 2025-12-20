@@ -13,8 +13,12 @@ runtime: shiny
 
 ```{r global, include=FALSE}
 # load data in 'global' chunk so it can be shared by all users of the dashboard
-library(ggplot2); library(mgcv); library(shiny)
-library(shinythemes); library(plotly)
+library(ggplot2)
+library(mgcv)
+library(shiny)
+library(shinythemes)
+library(plotly)
+library(hsdar)  # Required for PROSPECT and PROSAIL functions
 ```
 
 PROSAIL Model
@@ -24,18 +28,10 @@ Inputs {.sidebar}
 -----------------------------------------------------------------------
 #### Leaf parameters
 ```{r}
-# sliderInput('sampleSize', 'Sample Size', min=1, max=nrow(dataset), value=min(1000, nrow(dataset)), step=500, round=0)
-
-# checkboxInput('jitter', 'Jitter', value = TRUE)
-# checkboxInput('smooth', 'Smooth', value = TRUE)
 sliderInput("N", label = "Leaf Mesophyll index (N)", min = 1, value = c(1.2,1.5), max = 2.5, step = .1, animate = animationOptions(interval = 1000, loop = T))
 sliderInput("Cm", label = "Dry matter content (Cm, g cm-2)",  min = 0, value = c(0.01,0.012), max = 0.02, step = .001 )
 sliderInput("Cw", label = "Equivalent water thickness \n(Cw, g cm-2) ", min = 0, value = c(0.02, 0.03), max = 0.05 , step = .01 )
 sliderInput("Cab", label = "Leaf Chlorophyll Content (Cab, µg cm-2)", min = 0, value = c(45,60) , max = 90,  step = 5, animate = animationOptions(interval = 1000, loop = T))
-# sliderInput("Car", label = "Carotenoid content", min = 0, value = c(8,12), max = 20)
-#Cw_Rel <- seq(0.75,0.9, .05)
-
-
 ```
 
 #### Canopy parameters
@@ -45,13 +41,12 @@ sliderInput( "LAI", label = "Leaf Area Index (LAI, m\u00b2 / m\u00b2)",
                                   value =  c(1, 2),
                                   animate = animationOptions(interval = 1000, loop = T))
 sliderInput("lidfa", label = "Average Leaf Angle (ALA, gradi °)",  min = 0, value = c(45,67), max = 90, step = .5)
-# sliderInput("hspt", label = "Hotspot parameter (hspot)", min = .01, value = .05, max = .5, step = .02)
 ```
 
 ##### Satellite
 ```{r}
 selectInput("sensor", label = "Choose a sensor: ",
-choices = c("Sentinel2a", "Sentinel2b"), #"Landsat4","Landsat5","Landsat7","Landsat8","Quickbird","RapidEye","WorldView2-4","WorldView2-8")
+            choices = c("Sentinel2a", "Sentinel2b", "Landsat4", "Landsat5", "Landsat7", "Landsat8", "Quickbird", "RapidEye", "WorldView2-4", "WorldView2-8"),
             selected = "Sentinel2a")
 ```
 
@@ -67,20 +62,27 @@ Outputs
 ### Leaf reflectance - PROSPECT
 ```{r }
 dataset <- reactive({
-  # diamonds[sample(nrow(diamonds), input$sampleSize),]
- spectra <- hsdar::PROSPECT(parameterList = expand.grid(N= input$N, Cm =input$Cm, Cw=input$Cw, Cab =input$Cab#, #Car =input$Car,
-                                                        ));
-  prospectfile <- data.frame( Wav = 400:2500, Reflectance = t(spectra@spectra@spectra_ma) )
-  Reflectance = apply(prospectfile[, 2:ncol(prospectfile)], 1, mean)
-  Reflectance.sd = apply(prospectfile[, 2:ncol(prospectfile)], 1, sd)
-        data.frame(Wav = 400:2500, mean = round(Reflectance, 3), sd = round(Reflectance.sd,3) )
-        })
+  tryCatch({
+    spectra <- hsdar::PROSPECT(parameterList = expand.grid(
+      N = input$N, 
+      Cm = input$Cm, 
+      Cw = input$Cw, 
+      Cab = input$Cab
+    ))
+    prospectfile <- data.frame(Wav = 400:2500, Reflectance = t(spectra@spectra@spectra_ma))
+    Reflectance <- apply(prospectfile[, 2:ncol(prospectfile)], 1, mean)
+    Reflectance.sd <- apply(prospectfile[, 2:ncol(prospectfile)], 1, sd)
+    data.frame(Wav = 400:2500, mean = round(Reflectance, 3), sd = round(Reflectance.sd, 3))
+  }, error = function(e) {
+    data.frame(Wav = 400:2500, mean = 0, sd = 0)
+  })
+})
 
 renderPlotly({
   p1 <- ggplot(dataset(),aes(x=Wav,y=mean)) + geom_line(colour='darkgreen', lty="dashed", lwd=1.2) +
             geom_ribbon(aes(ymin=mean-sd, ymax=mean+sd, x=Wav), alpha = 0.3,  fill="green") +
             theme_classic(base_size = 14) +
-            labs(x="Wavelenght (nm)", y = "Reflectance (-)") +
+            labs(x="Wavelength (nm)", y = "Reflectance (-)") +
             scale_x_continuous(limits = c(400, 2500)) + scale_y_continuous(limits = c(0, 1))
   
  ggplotly(p1)
@@ -89,93 +91,92 @@ renderPlotly({
 
 ### Canopy reflectance - SAIL  
 ```{r }
-dataset2 <- reactive({
-  # diamonds[sample(nrow(diamonds), input$sampleSize),]
-spectra <- hsdar::PROSAIL(parameterList = expand.grid(
-            N= input$N, Cm =input$Cm, Cw=input$Cw, Cab =input$Cab, # Car =input$Car,
-            LAI=input$LAI, 
-            TypeLidf = 2, 
-            lidfa=input$lidfa #,hspot=input$hspt,tts=input$tts,tto=input$tto,psi=input$psi
-            )
-        );
-prosailfile.all <- data.frame( Wav = 400:2500, Reflectance = t(spectra@spectra@spectra_ma) )
-prosailfile <- data.frame( Wav = 400:2500, Reflectance = t(spectra@spectra@spectra_ma) )
-Reflectance <- apply(prosailfile[, 2:ncol(prosailfile)], 1, mean)
-Reflectance.sd <- apply(prosailfile[, 2:ncol(prosailfile)], 1, sd)
-        data.frame(Wav = 400:2500, mean = round(Reflectance,3), sd = round(Reflectance.sd, 3) )
+# Optimized: compute PROSAIL once and reuse
+prosail_spectra <- reactive({
+  tryCatch({
+    hsdar::PROSAIL(parameterList = expand.grid(
+      N = input$N, 
+      Cm = input$Cm, 
+      Cw = input$Cw, 
+      Cab = input$Cab,
+      LAI = input$LAI, 
+      TypeLidf = 2, 
+      lidfa = input$lidfa
+    ))
+  }, error = function(e) {
+    NULL
+  })
+})
 
-        })
+dataset2 <- reactive({
+  if (is.null(prosail_spectra())) return(data.frame(Wav = 400:2500, mean = 0, sd = 0))
+  prosailfile <- data.frame(Wav = 400:2500, Reflectance = t(prosail_spectra()@spectra@spectra_ma))
+  Reflectance <- apply(prosailfile[, 2:ncol(prosailfile)], 1, mean)
+  Reflectance.sd <- apply(prosailfile[, 2:ncol(prosailfile)], 1, sd)
+  data.frame(Wav = 400:2500, mean = round(Reflectance, 3), sd = round(Reflectance.sd, 3))
+})
 
 dataset_s2 <- reactive({
-      spectra <- hsdar::PROSAIL(parameterList = expand.grid(
-            N= input$N, Cm =input$Cm, Cw=input$Cw, Cab =input$Cab, #Car =input$Car,
-            LAI=input$LAI, 
-            TypeLidf = 2, 
-            lidfa=input$lidfa #,hspot=input$hspt,tts=input$tts,tto=input$tto,psi=input$psi
-            )
-        );
-     spectra.S2 <- hsdar::spectralResampling(spectra, input$sensor)
-        prosail.spectra.S2 <- spectra.S2@spectra@spectra_ma
-        
-        Reflectance.s2 = apply(prosail.spectra.S2[, 1:ncol(prosail.spectra.S2)], 2, mean)
-        Reflectance.s2.sd = apply(prosail.spectra.S2[, 1:ncol(prosail.spectra.S2)], 2, sd)
-        
-        data.frame(Wav = spectra.S2@wavelength, mean = round(Reflectance.s2,3), sd = round(Reflectance.s2.sd,3))
-        
+  if (is.null(prosail_spectra())) return(data.frame(Wav = numeric(0), mean = numeric(0), sd = numeric(0)))
+  tryCatch({
+    spectra.S2 <- hsdar::spectralResampling(prosail_spectra(), input$sensor)
+    prosail.spectra.S2 <- spectra.S2@spectra@spectra_ma
+    Reflectance.s2 <- apply(prosail.spectra.S2[, 1:ncol(prosail.spectra.S2)], 2, mean)
+    Reflectance.s2.sd <- apply(prosail.spectra.S2[, 1:ncol(prosail.spectra.S2)], 2, sd)
+    data.frame(Wav = spectra.S2@wavelength, mean = round(Reflectance.s2, 3), sd = round(Reflectance.s2.sd, 3))
+  }, error = function(e) {
+    data.frame(Wav = numeric(0), mean = numeric(0), sd = numeric(0))
   })
-   
+})
+
 dataset_s2_show <- reactive({
-  
-  parameter <- expand.grid(
-            N= input$N, Cm =input$Cm, Cw=input$Cw, Cab =input$Cab, #Car =input$Car,
-            LAI=input$LAI, 
-            TypeLidf = 2, 
-            lidfa=input$lidfa #,hspot=input$hspt,tts=input$tts,tto=input$tto,psi=input$psi
-            )
-  
-      spectra <- hsdar::PROSAIL(parameterList = expand.grid(
-            N= input$N, Cm =input$Cm, Cw=input$Cw, Cab =input$Cab, #Car =input$Car,
-            LAI=input$LAI, 
-            TypeLidf = 2, 
-            lidfa=input$lidfa #,hspot=input$hspt,tts=input$tts,tto=input$tto,psi=input$psi
-            )
-        );
-      
-     spectra.S2 <- hsdar::spectralResampling(spectra, input$sensor)
-        prosail.spectra.S2 <- data.frame( round(spectra.S2@spectra@spectra_ma,4) )
-         prosail.spectra.S2 <- cbind(parameter,prosail.spectra.S2)
-      colnames(prosail.spectra.S2)[8:ncol(prosail.spectra.S2)] <- paste0("R",spectra.S2@wavelength)
-      colnames(prosail.spectra.S2)[7] <- "ALA"
-prosail.spectra.S2$TypeLidf <- NULL
-      data.frame(prosail.spectra.S2)
-        
+  if (is.null(prosail_spectra())) return(data.frame())
+  tryCatch({
+    parameter <- expand.grid(
+      N = input$N, 
+      Cm = input$Cm, 
+      Cw = input$Cw, 
+      Cab = input$Cab,
+      LAI = input$LAI, 
+      TypeLidf = 2, 
+      lidfa = input$lidfa
+    )
+    spectra.S2 <- hsdar::spectralResampling(prosail_spectra(), input$sensor)
+    prosail.spectra.S2 <- data.frame(round(spectra.S2@spectra@spectra_ma, 4))
+    prosail.spectra.S2 <- cbind(parameter, prosail.spectra.S2)
+    colnames(prosail.spectra.S2)[8:ncol(prosail.spectra.S2)] <- paste0("R", spectra.S2@wavelength)
+    colnames(prosail.spectra.S2)[7] <- "ALA"
+    prosail.spectra.S2$TypeLidf <- NULL
+    data.frame(prosail.spectra.S2)
+  }, error = function(e) {
+    data.frame()
   })
+})
       
 renderPlotly({ 
-p <- ggplot() +
-            geom_line(data = dataset2(), aes(x=Wav,y=mean),colour='darkred', lty="dashed", lwd=1.2) +
-            geom_ribbon(data = dataset2(), aes(ymin=mean-sd, ymax=mean+sd, x=Wav), fill="red", alpha = 0.3) +
-            #  geom_errorbar(data=prosailfile.s2, mapping=aes(x=Wav, ymin=Reflectance-Reflectance.sd, ymax=Reflectance+Reflectance.sd), width=0.2, size=1, color="blue") + 
-                        geom_point(data = dataset_s2(), aes(x = Wav, y = mean), fill="green", color = "black",  pch=21, size=3, alpha=.33) +
-            theme_classic(base_size = 14) +
-            labs(x="Wavelenght (nm)", y = "Reflectance (-)") +
-            scale_x_continuous(limits = c(400, 2500)) + scale_y_continuous(limits = c(0, 1))
-
-      ggplotly(p)
-     })
+  p <- ggplot() +
+    geom_line(data = dataset2(), aes(x = Wav, y = mean), colour = 'darkred', lty = "dashed", lwd = 1.2) +
+    geom_ribbon(data = dataset2(), aes(ymin = mean - sd, ymax = mean + sd, x = Wav), fill = "red", alpha = 0.3) +
+    geom_point(data = dataset_s2(), aes(x = Wav, y = mean), fill = "green", color = "black", pch = 21, size = 3, alpha = .33) +
+    theme_classic(base_size = 14) +
+    labs(x = "Wavelength (nm)", y = "Reflectance (-)") +
+    scale_x_continuous(limits = c(400, 2500)) + 
+    scale_y_continuous(limits = c(0, 1))
+  ggplotly(p)
+})
 ```
 
 ```{r include=FALSE}
 x <- reactive({
-  x <- dataset_s2_show()
-  colnames(x) <- c("N", "Cm", "Cw", "Cab", "LAI",  "ALA", "B1", 
- "B2",  "B3",  "B4",  "B5",  "B6",  "B7",  "B8", 
- "B8a",  "B9",  "B10", "B11", "B12")
-  
-  x$NDVI <- (x$B8-x$B4)/(x$B8+x$B4)
-  x$NDRE <- (x$B8-x$B5)/(x$B8+x$B5)
-  x$GNDVI <- (x$B8-x$B3)/(x$B8+x$B3)
-  return(x)
+  df <- dataset_s2_show()
+  if (nrow(df) == 0) return(data.frame())
+  colnames(df) <- c("N", "Cm", "Cw", "Cab", "LAI", "ALA", "B1", 
+                    "B2", "B3", "B4", "B5", "B6", "B7", "B8", 
+                    "B8a", "B9", "B10", "B11", "B12")
+  df$NDVI <- (df$B8 - df$B4) / (df$B8 + df$B4)
+  df$NDRE <- (df$B8 - df$B5) / (df$B8 + df$B5)
+  df$GNDVI <- (df$B8 - df$B3) / (df$B8 + df$B3)
+  return(df)
 })
 ```
 Outputs 
@@ -184,34 +185,31 @@ Outputs
 ### LAI  
 ```{r}
 renderPlotly({ 
-p <- ggplot() +
-    geom_point(data = x(), aes(x = NDVI, y = LAI), fill="green", color = "black",
-          pch=21, size=3, alpha=.33) +
-            theme_classic(base_size = 14) +
-            labs(x="NDVI", y = "LAI")  +
-              geom_smooth(method = lm)
-            # scale_x_continuous(limits = c(400, 2500)) +
-            # scale_y_continuous(limits = c(0, 1))
-
-      ggplotly(p)
-     })
+  df <- x()
+  if (nrow(df) == 0) return(plotly_empty())
+  vi_col <- input$vis
+  p <- ggplot(data = df, aes(x = .data[[vi_col]], y = LAI)) +
+    geom_point(fill = "green", color = "black", pch = 21, size = 3, alpha = .33) +
+    geom_smooth(method = lm, se = TRUE) +
+    theme_classic(base_size = 14) +
+    labs(x = input$vis, y = "LAI (m²/m²)")
+  ggplotly(p)
+})
 ```
 
-### Clorophyll
+### Chlorophyll
 ```{r}
 renderPlotly({ 
-p <- ggplot() +
-    geom_point(data = x(), aes(x = NDVI, y = Cab), fill="green", color = "black",
-          pch=21, size=3, alpha=.33) +
-            theme_classic(base_size = 14) +
-            labs(x="NDVI", y = "Cab")  +
-            geom_smooth(method = lm)
-            # scale_x_continuous(limits = c(400, 2500)) +
-            # scale_y_continuous(limits = c(0, 1))
-
-      ggplotly(p)
-     })
-```
+  df <- x()
+  if (nrow(df) == 0) return(plotly_empty())
+  vi_col <- input$vis
+  p <- ggplot(data = df, aes(x = .data[[vi_col]], y = Cab)) +
+    geom_point(fill = "green", color = "black", pch = 21, size = 3, alpha = .33) +
+    geom_smooth(method = lm, se = TRUE) +
+    theme_classic(base_size = 14) +
+    labs(x = input$vis, y = "Cab (µg cm⁻²)")
+  ggplotly(p)
+})
 
 Info
 =====================================
