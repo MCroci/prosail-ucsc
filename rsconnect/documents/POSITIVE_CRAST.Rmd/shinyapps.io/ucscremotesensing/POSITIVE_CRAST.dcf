@@ -1,0 +1,13 @@
+name: POSITIVE_CRAST
+title: POSITIVE_CRAST
+username:
+account: ucscremotesensing
+server: shinyapps.io
+hostUrl: https://api.shinyapps.io/v1
+appId: 5443227
+bundleId: 5488691
+url: https://ucscremotesensing.shinyapps.io/POSITIVE_CRAST/
+when: 1642681064.86701
+lastSyncTime: 1642681064.86701
+asMultiple: FALSE
+asStatic: FALSE
