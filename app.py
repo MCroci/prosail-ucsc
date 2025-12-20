@@ -254,53 +254,91 @@ def calculate_prosail(N_values, Cm_values, Cw_values, Cab_values, LAI_values, li
         params = list(product(N_vals, Cm_vals, Cw_vals, Cab_vals, LAI_vals, lidfa_vals))
         param_df = pd.DataFrame(params, columns=['N', 'Cm', 'Cw', 'Cab', 'LAI', 'lidfa'])
         
-        # Add TypeLidf column
-        param_df['TypeLidf'] = 2
+        # Calculate PROSAIL for each parameter combination
+        spectra_list = []
+        wavelengths = np.arange(400, 2501, 1)
         
-        # Convert to R
-        r_params = pandas2ri.py2rpy(param_df)
+        for n, cm, cw, cab, lai, lidfa in params:
+            # prosail.run_prosail parameters
+            rho_canopy = prosail.run_prosail(
+                n=n,
+                cab=cab,
+                car=0.0,
+                cbrown=0.0,
+                cw=cw,  # Already in cm equivalent
+                cm=cm*100,  # Convert g/cm² to g/m²
+                lai=lai,
+                lidfa=lidfa,
+                hspot=0.01,  # Hotspot parameter
+                tts=45.0,  # Solar zenith angle
+                tto=0.0,  # Observer zenith angle (nadir)
+                psi=0.0,  # Relative azimuth
+                ant=0.0,
+                alpha=40.0,
+                prospect_version='D',
+                typelidf=2,  # Ellipsoidal distribution
+                lidfb=0.0,
+                factor='SDR'  # Surface directional reflectance
+            )
+            spectra_list.append(rho_canopy)
         
-        # Call PROSAIL
-        r_spectra = hsdar.PROSAIL(parameterList=r_params)
-        
-        # Extract full spectra (400-2500 nm)
-        spectra_matrix = np.array(r_spectra.slots['spectra'].slots['spectra_ma'])
+        # Calculate mean and sd across parameter combinations
+        spectra_matrix = np.array(spectra_list)
         reflectance_mean_full = np.mean(spectra_matrix, axis=0)
         reflectance_sd_full = np.std(spectra_matrix, axis=0)
         
         full_spectra_df = pd.DataFrame({
-            'Wav': range(400, 2501),
+            'Wav': wavelengths,
             'mean': np.round(reflectance_mean_full, 3),
             'sd': np.round(reflectance_sd_full, 3)
         })
         
         # Spectral resampling for sensor
-        r_spectra_s2 = hsdar.spectralResampling(r_spectra, sensor_name)
-        spectra_s2_matrix = np.array(r_spectra_s2.slots['spectra'].slots['spectra_ma'])
-        wavelengths_s2 = np.array(r_spectra_s2.slots['wavelength'])
-        
-        reflectance_mean_s2 = np.mean(spectra_s2_matrix, axis=0)
-        reflectance_sd_s2 = np.std(spectra_s2_matrix, axis=0)
-        
-        sensor_spectra_df = pd.DataFrame({
-            'Wav': wavelengths_s2,
-            'mean': np.round(reflectance_mean_s2, 3),
-            'sd': np.round(reflectance_sd_s2, 3)
-        })
-        
-        # Create full dataset with bands
-        full_dataset = param_df.copy()
-        band_cols = [f'R{int(w)}' for w in wavelengths_s2]
-        full_dataset[band_cols] = np.round(spectra_s2_matrix.T, 4)
-        full_dataset = full_dataset.rename(columns={'lidfa': 'ALA'})
-        full_dataset = full_dataset.drop(columns=['TypeLidf'])
-        
-        # Calculate vegetation indices (assuming Sentinel-2 bands)
-        if len(band_cols) >= 12:
-            # Sentinel-2 band order: B1, B2, B3, B4, B5, B6, B7, B8, B8a, B9, B10, B11, B12
-            full_dataset['NDVI'] = (full_dataset[band_cols[7]] - full_dataset[band_cols[3]]) / (full_dataset[band_cols[7]] + full_dataset[band_cols[3]])
-            full_dataset['NDRE'] = (full_dataset[band_cols[7]] - full_dataset[band_cols[4]]) / (full_dataset[band_cols[7]] + full_dataset[band_cols[4]])
-            full_dataset['GNDVI'] = (full_dataset[band_cols[7]] - full_dataset[band_cols[2]]) / (full_dataset[band_cols[7]] + full_dataset[band_cols[2]])
+        sensor_spectra_list = []
+        if HAS_SENSOR_BANDS and sensor_name in SENSOR_BANDS:
+            sensor_info = SENSOR_BANDS[sensor_name]
+            target_wls = sensor_info['wavelengths']
+            fwhm = sensor_info.get('fwhm')
+            
+            for rho_full in spectra_list:
+                rho_sensor = resample_spectrum(wavelengths, rho_full, target_wls, fwhm)
+                sensor_spectra_list.append(rho_sensor)
+            
+            sensor_spectra_matrix = np.array(sensor_spectra_list)
+            reflectance_mean_s2 = np.mean(sensor_spectra_matrix, axis=0)
+            reflectance_sd_s2 = np.std(sensor_spectra_matrix, axis=0)
+            
+            sensor_spectra_df = pd.DataFrame({
+                'Wav': target_wls,
+                'mean': np.round(reflectance_mean_s2, 3),
+                'sd': np.round(reflectance_sd_s2, 3)
+            })
+            
+            # Create full dataset with bands
+            full_dataset = param_df.copy()
+            band_cols = [f'R{int(w)}' for w in target_wls]
+            full_dataset[band_cols] = np.round(sensor_spectra_matrix, 4)
+            full_dataset = full_dataset.rename(columns={'lidfa': 'ALA'})
+            
+            # Calculate vegetation indices (for Sentinel-2: B8 (833nm), B4 (665nm), B5 (704nm), B3 (560nm))
+            if sensor_name.startswith('Sentinel') and len(target_wls) >= 9:
+                # Sentinel-2 bands: B1(443), B2(496), B3(560), B4(665), B5(704), B6(740), B7(783), B8(835), B8a(865), B9(945), B11(1614), B12(2202)
+                # Index: 0=B1, 1=B2, 2=B3, 3=B4, 4=B5, 7=B8
+                full_dataset['NDVI'] = (full_dataset[band_cols[7]] - full_dataset[band_cols[3]]) / (full_dataset[band_cols[7]] + full_dataset[band_cols[3]] + 1e-10)
+                full_dataset['NDRE'] = (full_dataset[band_cols[7]] - full_dataset[band_cols[4]]) / (full_dataset[band_cols[7]] + full_dataset[band_cols[4]] + 1e-10)
+                full_dataset['GNDVI'] = (full_dataset[band_cols[7]] - full_dataset[band_cols[2]]) / (full_dataset[band_cols[7]] + full_dataset[band_cols[2]] + 1e-10)
+            else:
+                # Generic calculation if band structure unknown
+                if len(band_cols) >= 4:
+                    full_dataset['NDVI'] = 0.0
+                    full_dataset['NDRE'] = 0.0
+                    full_dataset['GNDVI'] = 0.0
+        else:
+            sensor_spectra_df = pd.DataFrame({'Wav': [], 'mean': [], 'sd': []})
+            full_dataset = param_df.copy()
+            full_dataset['NDVI'] = 0.0
+            full_dataset['NDRE'] = 0.0
+            full_dataset['GNDVI'] = 0.0
         
         return full_spectra_df, sensor_spectra_df, full_dataset
     except Exception as e:
